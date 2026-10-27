@@ -6,13 +6,19 @@ import {
 } from '@nestjs/common';
 import { Context, Markup, Telegraf } from 'telegraf';
 import { ConfigService } from '@nestjs/config';
+import { message } from 'telegraf/filters';
+import { AiService } from '../ai/ai.service';
 
 @Injectable()
 export class BotService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(BotService.name);
   private bot: Telegraf<Context>;
+  private readonly awaitingPromptUsers = new Set<number>();
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly aiService: AiService,
+  ) {
     const token = this.configService.getOrThrow<string>('TELEGRAM_BOT_TOKEN');
     this.bot = new Telegraf(token);
   }
@@ -55,9 +61,27 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     });
 
     this.bot.hears('Prompt-AI', async (ctx) => {
+      this.awaitingPromptUsers.add(ctx.from.id);
       await ctx.reply(
         'Write your request for Gemini AI in the following message:',
       );
+    });
+
+    this.bot.on(message('text'), async (ctx) => {
+      const userId = ctx.from.id;
+
+      if (!this.awaitingPromptUsers.has(userId)) {
+        await ctx.reply(
+          'Please select an option from the menu or click "Prompt-AI" first.',
+        );
+        return;
+      }
+
+      this.awaitingPromptUsers.delete(userId);
+      await ctx.sendChatAction('typing');
+
+      const answer = await this.aiService.generateText(ctx.message.text);
+      await ctx.reply(answer);
     });
   }
 }
